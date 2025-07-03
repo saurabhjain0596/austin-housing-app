@@ -32,7 +32,7 @@ MODEL_PATH = "best_model.pkl"
 
 @st.cache_data(show_spinner=True)
 def load_data() -> pd.DataFrame:
-    url = "https://raw.githubusercontent.com/<your-username>/austin-housing-app/main/austinHousingData.csv"
+    url = "https://raw.githubusercontent.com/saurabhjain0596/austin-housing-app/main/austinHousingData.csv"
     return pd.read_csv(url)
 
 def select_features(df: pd.DataFrame, target: str = "latestPrice", thresh: float = 0.05):
