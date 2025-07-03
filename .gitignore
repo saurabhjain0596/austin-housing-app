@@ -1,0 +1,7 @@
+__pycache__/
+*.pkl
+*.joblib
+*.zip
+*.DS_Store
+.env
+.streamlit/
