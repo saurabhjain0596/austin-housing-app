@@ -111,18 +111,40 @@ def train_best_model(X, y, preprocessor):
     return best_pipe, best_name, cv_results
 
 @st.cache_resource(show_spinner=True)
-def get_model(df: pd.DataFrame, use_pca: bool):
-    if os.path.exists(MODEL_PATH):
-        return joblib.load(MODEL_PATH)
-    num_cols, cat_cols = select_features(df)
-    X = df[num_cols + cat_cols]
+def get_model(df: pd.DataFrame, use_pca: bool, corr_thresh: float = 0.01, high_corr_thresh: float = 0.8):
+    from sklearn.feature_selection import mutual_info_regression
+    TARGET = "latestPrice"
     y = df[TARGET]
-    preprocessor = build_preprocessor(num_cols, cat_cols, use_pca)
-    pipe, best_name, cv_results = train_best_model(X, y, preprocessor)
-    meta = {"best_model": best_name, "cv_results": cv_results, "numeric_cols": num_cols, "categorical_cols": cat_cols, "use_pca": use_pca}
-    bundle = {"pipeline": pipe, "meta": meta}
-    joblib.dump(bundle, MODEL_PATH)
-    return bundle
+
+    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    if TARGET in numeric_cols:
+        numeric_cols.remove(TARGET)
+
+    corr_target = df[numeric_cols].corrwith(y).abs()
+    selected_numeric = corr_target[corr_target > corr_thresh].index.tolist()
+
+    corr_matrix = df[selected_numeric].corr().abs()
+    upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+    to_drop = [column for column in upper.columns if any(upper[column] > high_corr_thresh)]
+    selected_numeric = [col for col in selected_numeric if col not in to_drop]
+
+    categorical_cols = df.select_dtypes(exclude=[np.number]).nunique()
+    selected_categoricals = categorical_cols[categorical_cols < 20].index.tolist()
+
+    preprocessor = build_preprocessor(selected_numeric, selected_categoricals, use_pca)
+    X = df[selected_numeric + selected_categoricals]
+
+    best_name, best_pipe, cv_results = train_best_model(X, y, preprocessor)
+    best_pipe.fit(X, y)
+    meta = {
+        'best_model': best_name,
+        'cv_results': cv_results,
+        'numeric_cols': selected_numeric,
+        'categorical_cols': selected_categoricals,
+        'use_pca': use_pca
+    }
+    joblib.dump({'pipeline': best_pipe, 'meta': meta}, MODEL_PATH)
+    return {'pipeline': best_pipe, 'meta': meta}
 
 @st.cache_data
 def get_address_suggestions(addresses: List[str], query: str) -> List[str]:
