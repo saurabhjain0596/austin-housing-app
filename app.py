@@ -130,45 +130,60 @@ def get_address_suggestions(addresses: List[str], query: str) -> List[str]:
 
 def build_sidebar(df: pd.DataFrame, num_cols: List[str], cat_cols: List[str]):
     st.sidebar.header("Property Details")
-    query = st.sidebar.text_input("Street Address")
-    selected_row = None
-    if query:
-        suggestions = get_address_suggestions(df["streetAddress"].dropna().unique().tolist(), query)
-        address = st.sidebar.selectbox("Did you mean…", suggestions) if suggestions else None
-        if address:
-            selected_row = df[df["streetAddress"] == address].iloc[0]
-            st.sidebar.success("Address selected – defaults pre‑filled")
-    user_data = {}
-    for c in cat_cols:
-        opts = df[c].dropna().unique(); default = selected_row[c] if selected_row is not None else opts[0]
-        user_data[c] = st.sidebar.selectbox(c, opts, index=list(opts).index(default))
+    query = st.sidebar.text_input("Enter Address (free text)")
+    user_data = {"streetAddress": query.strip()}
+
+    # For numeric columns: apply formatting and sliders
     for n in num_cols:
-        col_min, col_max = float(df[n].min()), float(df[n].max())
-        default = float(selected_row[n]) if selected_row is not None else float(df[n].median())
-        if col_max - col_min > 1000:
-            user_data[n] = st.sidebar.slider(n, col_min, col_max, default)
+        if n in ["latitude", "longitude", "avgSchoolRating", "avgSchoolDistance", "propertyTaxRate"]:
+            default = round(df[n].median(), 1)
+            user_data[n] = round(st.sidebar.number_input(n, value=default, step=0.1), 1)
         else:
-            user_data[n] = st.sidebar.number_input(n, col_min, col_max, default)
+            default = int(round(df[n].median()))
+            user_data[n] = st.sidebar.number_input(n, value=default, step=1, format="%d")
+
+    for c in cat_cols:
+        options = df[c].dropna().unique().tolist()
+        user_data[c] = st.sidebar.selectbox(c, options)
+
     if "latest_saledate" in df.columns:
         min_d, max_d = df["latest_saledate"].min().date(), df["latest_saledate"].max().date()
         date_range = st.sidebar.date_input("Sale Date Range", [min_d, max_d])
         user_data["latest_saledate_num"] = np.mean([d.toordinal() for d in date_range])
-    return pd.DataFrame([user_data]), selected_row
 
-def plot_circle_map(df, center_lat, center_lon):
-    layer_data = df.copy()
-    layer_data = layer_data[(layer_data["latitude"] - center_lat)**2 + (layer_data["longitude"] - center_lon)**2 <= (0.036)**2]  # ~2.5mi radius
-    scatter = pdk.Layer("ScatterplotLayer", data=layer_data, get_position='[longitude, latitude]', get_color='[0, 112, 255]', get_radius=60)
-    center = pdk.Layer("ScatterplotLayer", data=pd.DataFrame({"latitude": [center_lat], "longitude": [center_lon]}), get_position='[longitude, latitude]', get_color='[255, 0, 0]', get_radius=RADIUS_M)
-    st.pydeck_chart(pdk.Deck(layers=[scatter, center], initial_view_state=pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=12, pitch=40)))
-    if not layer_data.empty:
-        st.subheader("📍 Nearby Stats (2.5 mi radius)")
+    return pd.DataFrame([user_data]), user_data
+
+# Refine circle map to properly reflect 2.5 mile radius
+
+def plot_circle_map(df, lat, lon):
+    df_filtered = df.copy()
+    df_filtered = df_filtered[df_filtered["latitude"].between(lat - 0.036, lat + 0.036) &
+                              df_filtered["longitude"].between(lon - 0.036, lon + 0.036)]
+
+    scatter = pdk.Layer("ScatterplotLayer",
+                        data=df_filtered,
+                        get_position='[longitude, latitude]',
+                        get_color='[0, 112, 255, 120]',
+                        get_radius=60)
+
+    center = pdk.Layer("ScatterplotLayer",
+                       data=pd.DataFrame({"latitude": [lat], "longitude": [lon]}),
+                       get_position='[longitude, latitude]',
+                       get_color='[255, 0, 0]',
+                       get_radius=60)
+
+    st.pydeck_chart(pdk.Deck(
+        layers=[scatter, center],
+        initial_view_state=pdk.ViewState(latitude=lat, longitude=lon, zoom=12, pitch=40)))
+
+    if not df_filtered.empty:
+        st.subheader("📍 Nearby Area Stats (2.5 mi radius)")
         st.write({
-            "count": len(layer_data),
-            "min": layer_data[TARGET].min(),
-            "max": layer_data[TARGET].max(),
-            "median": layer_data[TARGET].median(),
-            "average": layer_data[TARGET].mean()
+            "Total Listings": len(df_filtered),
+            "Min Price": df_filtered[TARGET].min(),
+            "Max Price": df_filtered[TARGET].max(),
+            "Median Price": df_filtered[TARGET].median(),
+            "Average Price": df_filtered[TARGET].mean()
         })
 
 def shap_explanation(pipe: Pipeline, input_df: pd.DataFrame):
@@ -186,17 +201,48 @@ def shap_explanation(pipe: Pipeline, input_df: pd.DataFrame):
 
 def main():
     st.set_page_config(page_title="Austin Housing Price", layout="wide")
-    st.title("🏡 Austin Housing Price Predictor – Enhanced")
-    use_pca = st.sidebar.checkbox("Use PCA (numeric)", value=False)
+    st.title("🏡 Austin Housing Price Predictor")
+
+    use_pca = st.sidebar.checkbox("Use PCA (numeric features)", value=False)
     df = load_data()
     bundle = get_model(df, use_pca)
-    input_df, selected_row = build_sidebar(df, bundle["meta"]["numeric_cols"], bundle["meta"]["categorical_cols"])
-    if st.button("🔍 Predict Price"):
-        pred = bundle["pipeline"].predict(input_df)[0]
-        st.metric("Predicted Price ($)", f"{pred:,.0f}")
-        if selected_row is not None:
-            plot_circle_map(df, selected_row["latitude"], selected_row["longitude"])
-        shap_explanation(bundle["pipeline"], input_df)
+    pipeline = bundle["pipeline"]
+    meta = bundle["meta"]
+
+    tab1, tab2, tab3 = st.tabs(["📊 Explore", "🧠 Model", "📍 Predict"])
+
+    with tab1:
+        st.subheader("🔍 Feature Correlation")
+        corr_df = df.select_dtypes(include=[np.number]).corr().stack().reset_index(name='value')
+        chart = alt.Chart(corr_df).mark_rect().encode(
+            x='level_0:O', y='level_1:O', color=alt.Color('value:Q', scale=alt.Scale(scheme='redblue')),
+            tooltip=['level_0', 'level_1', alt.Tooltip('value:Q', format='.2f')])
+        st.altair_chart(chart, use_container_width=True)
+
+        st.subheader("📈 Price Distribution")
+        st.plotly_chart(px.histogram(df, x=TARGET, nbins=50), use_container_width=True)
+        st.subheader("🔢 Sample Data")
+        st.dataframe(df.head(50))
+
+    with tab2:
+        st.subheader("📉 Cross‑Validation RMSE")
+        st.plotly_chart(px.bar(x=list(meta['cv_results'].keys()),
+                               y=list(meta['cv_results'].values()),
+                               labels={'x': 'Model', 'y': 'CV RMSE'}))
+        st.markdown("### Model Metadata")
+        st.json(meta)
+
+    with tab3:
+        input_df, input_meta = build_sidebar(df, meta['numeric_cols'], meta['categorical_cols'])
+        if st.button("🔍 Predict Price"):
+            prediction = pipeline.predict(input_df)[0]
+            st.metric("Predicted Home Price", f"${prediction:,.0f}")
+
+            lat = input_df["latitude"].iloc[0]
+            lon = input_df["longitude"].iloc[0]
+            plot_circle_map(df, lat, lon)
+
+            shap_explanation(pipeline, input_df)
 
 if __name__ == "__main__":
     main()
