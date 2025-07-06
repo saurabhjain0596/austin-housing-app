@@ -133,9 +133,15 @@ def build_sidebar(df: pd.DataFrame, num_cols: List[str], cat_cols: List[str]):
     query = st.sidebar.text_input("Enter Address (free text)")
     user_data = {"streetAddress": query.strip()}
 
-    # For numeric columns: apply formatting and sliders
+    exclude_cols = {"latitude", "longitude", "propertyTaxRate", "numPriceChanges", "latest_slaemonth",
+                    "latest_saleyear", "noOfPhotos", "numOfAccessibilityFeatures", "numOfParkingFeatures",
+                    "numOfPatioAndPorchFeatures", "numOfWaterfrontFeatures", "latestPrice", "city",
+                    "hasSpa", "hasView"}
+
     for n in num_cols:
-        if n in ["latitude", "longitude", "avgSchoolRating", "avgSchoolDistance", "propertyTaxRate"]:
+        if n in exclude_cols:
+            continue
+        if n in ["avgSchoolRating", "avgSchoolDistance"]:
             default = round(df[n].median(), 1)
             user_data[n] = round(st.sidebar.number_input(n, value=default, step=0.1), 1)
         else:
@@ -143,13 +149,10 @@ def build_sidebar(df: pd.DataFrame, num_cols: List[str], cat_cols: List[str]):
             user_data[n] = st.sidebar.number_input(n, value=default, step=1, format="%d")
 
     for c in cat_cols:
+        if c in exclude_cols:
+            continue
         options = df[c].dropna().unique().tolist()
         user_data[c] = st.sidebar.selectbox(c, options)
-
-    if "latest_saledate" in df.columns:
-        min_d, max_d = df["latest_saledate"].min().date(), df["latest_saledate"].max().date()
-        date_range = st.sidebar.date_input("Sale Date Range", [min_d, max_d])
-        user_data["latest_saledate_num"] = np.mean([d.toordinal() for d in date_range])
 
     return pd.DataFrame([user_data]), user_data
 
@@ -205,7 +208,7 @@ def main():
 
     use_pca = st.sidebar.checkbox("Use PCA (numeric features)", value=False)
     df = load_data()
-    bundle = get_model(df, use_pca)
+    bundle = get_model(df, use_pca, corr_thresh=0.01, high_corr_thresh=0.8)
     pipeline = bundle["pipeline"]
     meta = bundle["meta"]
 
@@ -238,8 +241,8 @@ def main():
             prediction = pipeline.predict(input_df)[0]
             st.metric("Predicted Home Price", f"${prediction:,.0f}")
 
-            lat = input_df["latitude"].iloc[0]
-            lon = input_df["longitude"].iloc[0]
+            lat = input_df.get("latitude", pd.Series([30.2672])).iloc[0]
+            lon = input_df.get("longitude", pd.Series([-97.7431])).iloc[0]
             plot_circle_map(df, lat, lon)
 
             shap_explanation(pipeline, input_df)
