@@ -69,7 +69,7 @@ def load_data() -> pd.DataFrame:
             df[f"{col}_num"] = df[col].apply(lambda x: x.toordinal() if pd.notnull(x) else np.nan)
     return df
 
-def select_features(df: pd.DataFrame, target: str = TARGET, thresh: float = 0.05, corr_cutoff: float = 0.9):
+def select_features(df: pd.DataFrame, target: str = TARGET, thresh: float = 0.01, corr_cutoff: float = 0.8):
     num_cols_all = df.select_dtypes(include=[np.number]).columns.tolist()
     if target in num_cols_all:
         num_cols_all.remove(target)
